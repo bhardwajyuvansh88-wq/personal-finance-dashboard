@@ -1,0 +1,148 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from datetime import datetime, timedelta
+import seaborn as sns
+import matplotlib.pyplot as plt
+st.sidebar.header("Portfolio Settings")
+st.sidebar.caption("Equal-weight portfolio assumed — each stock gets equal allocation.")
+raw_input = st.sidebar.text_input("Enter stock tickers (e.g: AAPL, GOOGL, TSLA)")
+time_horizon = st.sidebar.number_input("Time horizon in days (default = 365)", min_value=1, value=365)
+analyze = st.button("Analyze Portfolio")
+st.title("PERSONAL FINANCE DASHBOARD")
+if analyze:
+    if not raw_input.strip():
+        st.error("Please enter at least one ticker.")
+        st.stop()
+    tickers = [t.strip().upper() for t in raw_input.split(",") if t.strip()]
+    start_date = datetime.today() - timedelta(days=time_horizon)
+    good_tickers, bad_tickers = [], []
+    for t in tickers:
+        try:
+            test = yf.download(t, start=start_date, progress=False)["Close"]
+            if test.empty:
+                bad_tickers.append(t)
+            else:
+                good_tickers.append(t)
+        except:
+            bad_tickers.append(t)
+
+    if bad_tickers:
+        st.warning(f"{', '.join(bad_tickers)} : these tickers didn't work")
+    if not good_tickers:
+        st.error("No valid tickers found. Please check your input.")
+        st.stop()
+    data = yf.download(good_tickers, start=start_date, progress=False)["Close"].dropna()
+    benchmark = yf.download("^NSEI", start=start_date, progress=False)["Close"]
+    benchmark_normalized = (benchmark / benchmark.iloc[0]) * 100
+    benchmark_normalized = benchmark_normalized.squeeze()
+    normalized = (data / data.iloc[0]) * 100
+    portfolio = normalized.mean(axis=1)
+    total_return = round(float(portfolio.iloc[-1]) - 100, 2)
+    best = normalized.iloc[-1].idxmax()
+    worst = normalized.iloc[-1].idxmin()
+
+    # Volatility — daily std of returns, annualized to % scale
+    # <1% daily std = Low, <2% = Medium, else High
+    # Based on typical equity volatility ranges
+    volatility = float(portfolio.pct_change().std() * 100)
+    if volatility < 1:
+        vol_label = "Low"
+        vol_delta = "Stable portfolio"
+    elif volatility < 2:
+        vol_label = "Medium"
+        vol_delta = "Moderate risk"
+    else:
+        vol_label = "High"
+        vol_delta = "Higher risk"
+
+    benchmark_return = round(float(benchmark_normalized.iloc[-1]) - 100, 2)
+    vs_benchmark = round(total_return - benchmark_return, 2)
+    st.header("Portfolio Overview")
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "Total Return",
+        f"{total_return}%",
+        delta=f"{vs_benchmark}% vs NIFTY 50"
+    )
+    col2.metric(
+        "NIFTY 50 Return",
+        f"{benchmark_return}%"
+    )
+    col3.metric(
+        "Volatility",
+        vol_label,
+        delta=vol_delta
+    )
+
+    if total_return > benchmark_return:
+        st.success(f"Your portfolio is outperforming NIFTY 50 by {vs_benchmark}%.")
+    else:
+        st.warning(f"Your portfolio is underperforming NIFTY 50 by {abs(vs_benchmark)}%.")
+    st.subheader("Portfolio Value Trend vs NIFTY 50")
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(portfolio.index, portfolio.values, label="Your Portfolio", linewidth=2)
+    ax.plot(benchmark_normalized.index, benchmark_normalized.values,
+            label="NIFTY 50", linewidth=2, linestyle="--")
+    ax.set_ylabel("Value (base 100)")
+    ax.set_xlabel("Date")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    st.pyplot(fig)
+    st.subheader("Individual Stock Performance")
+    fig2, ax2 = plt.subplots(figsize=(10, 4))
+    for col in normalized.columns:
+        ax2.plot(normalized.index, normalized[col], label=col, linewidth=1.8)
+    ax2.set_ylabel("Normalized Value (base 100)")
+    ax2.set_xlabel("Date")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    st.pyplot(fig2)
+    st.subheader("Performance Breakdown")
+    col4, col5 = st.columns(2)
+    col4.metric("Best Stock", best)
+    col5.metric("Worst Stock", worst)
+    st.subheader("Correlation Matrix")
+    df_corr = data.pct_change().dropna()
+    matrix = df_corr.corr()
+    fig3, ax3 = plt.subplots(figsize=(8, 6))
+    sns.heatmap(matrix, annot=True, cmap="coolwarm", vmin=-1, vmax=1,
+                ax=ax3, annot_kws={"size": 11})
+    ax3.set_title("Correlation Matrix", fontsize=13)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    st.pyplot(fig3)
+    st.subheader("Insights")
+    # Average correlation (excluding diagonal)
+    corr_values = matrix.where(
+        np.triu(np.ones(matrix.shape), k=1).astype(bool)
+    ).stack()
+    avg_corr = round(float(corr_values.mean()), 2)
+
+    if avg_corr > 0.8:
+        corr_strength = "very high"
+    elif avg_corr > 0.5:
+        corr_strength = "moderate"
+    else:
+        corr_strength = "low"
+
+    high_corr_pairs = []
+    cols = matrix.columns
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            if matrix.iloc[i][j] > 0.8:
+                high_corr_pairs.append((cols[i], cols[j]))
+    if high_corr_pairs:
+        for pair in high_corr_pairs:
+            st.warning(f"{pair[0]} and {pair[1]} are highly correlated — diversification risk.")
+    else:
+        st.success(f"Good diversification — no highly correlated pairs found.")
+    st.info(f"Average correlation across your portfolio: **{avg_corr}** ({corr_strength} overall correlation)")
+    with st.expander("View Raw Closing Price Data"):
+        st.dataframe(data)
